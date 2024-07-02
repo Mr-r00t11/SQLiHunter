@@ -1,8 +1,8 @@
-# SQLi Detector
+# SQLiHunter
 
 ## Descripción
 
-SQLi Detector es una herramienta automatizada para detectar y explotar vulnerabilidades de inyección SQL en aplicaciones web. Utiliza payloads específicos para diferentes gestores de bases de datos y permite identificar vulnerabilidades tanto por errores visibles como por técnicas blind. Además, ofrece la opción de intentar explotar las vulnerabilidades detectadas utilizando `sqlmap`.
+SQLiHunter es una herramienta automatizada para detectar y explotar vulnerabilidades de inyección SQL en aplicaciones web. Utiliza payloads específicos para diferentes gestores de bases de datos y permite identificar vulnerabilidades tanto por errores visibles como por técnicas blind. Además, ofrece la opción de intentar explotar las vulnerabilidades detectadas utilizando `sqlmap`.
 
 ## Funcionalidades
 
@@ -27,7 +27,7 @@ git clone https://github.com/tu_usuario/tu_repositorio.git
 
 2. Navega al directorio del proyecto:
 ```bash
-cd tu_repositorio
+cd SQLiHunter
 ```
 
 3. Instala las dependencias:
@@ -41,7 +41,7 @@ pip install -r requirements.txt
   
 2. Ejecuta el script de detección:
 ```bash
-python sqli_detector.py urls.txt
+python SQLiHunter.py urls.txt
 ```
 
 - Donde `urls.txt` es el archivo que contiene las URLs a analizar.
@@ -63,7 +63,7 @@ http://example.org/search?query=test
 
 Ejecutar el script:
 ```bash
-python sqli_detector.py urls.txt
+python SQLiHunter.py urls.txt
 ```
 
 Resultados generados:
