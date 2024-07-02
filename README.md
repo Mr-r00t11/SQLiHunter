@@ -43,6 +43,7 @@ pip install -r requirements.txt
 ```bash
 python SQLiHunter.py urls.txt
 ```
+![[Screenshot1.png]](https://github.com/Mr-r00t11/SQLiHunter/blob/main/img/Screenshot_1.png)
 
 - Donde `urls.txt` es el archivo que contiene las URLs a analizar.
 
